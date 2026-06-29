@@ -1,0 +1,46 @@
+# NSE Index HTML Tracker — auto-updates every weekday evening (20:00 IST).
+#
+# Setup (one time, after pushing to GitHub):
+#   1. Repo Settings → Pages → Source: "Deploy from a branch" → Branch: main → / (root)
+#   2. The workflow below commits index.html back to main on each run.
+#      GitHub Pages automatically serves the updated file.
+#
+# You can also trigger it manually from the Actions tab.
+
+name: update-dashboard
+
+on:
+  schedule:
+    - cron: "30 14 * * 1-5"   # 14:30 UTC = 20:00 IST, Monday–Friday
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to commit index.html back to the repo
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate dashboard
+        run: python generate.py
+
+      - name: Commit & push index.html
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add index.html
+          # Only commit if the file actually changed
+          git diff --cached --quiet || git commit -m "Dashboard update: $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push
