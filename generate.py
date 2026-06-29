@@ -144,11 +144,11 @@ def fetch_yf(ticker: str) -> pd.Series:
 # NiftyIndices daily snapshot (fallback for latest close)
 # ---------------------------------------------------------------------------
 
-_nifty_session: requests.Session | None = None
+_nifty_session = None
 _snapshot_cache: dict = {}
 
 
-def _nifty_session_get() -> requests.Session:
+def _nifty_session_get():
     global _nifty_session
     if _nifty_session is None:
         _nifty_session = requests.Session()
@@ -161,7 +161,7 @@ def _nifty_session_get() -> requests.Session:
     return _nifty_session
 
 
-def _load_snapshot(date: dt.date) -> dict[str, float]:
+def _load_snapshot(date: dt.date) -> dict:
     key = date.strftime("%d%m%Y")
     if key in _snapshot_cache:
         return _snapshot_cache[key]
@@ -196,7 +196,7 @@ def _load_snapshot(date: dt.date) -> dict[str, float]:
         return {}
 
 
-def nifty_latest(nse_label: str) -> tuple[str, float] | None:
+def nifty_latest(nse_label: str):
     """Return (date_str, close) from NiftyIndices snapshot, looking back up to 5 days."""
     def normalise(s: str) -> str:
         s = re.sub(r"\bindex\b", "", s.lower().replace("&", "and"))
@@ -206,12 +206,11 @@ def nifty_latest(nse_label: str) -> tuple[str, float] | None:
     today = dt.date.today()
     for back in range(5):
         d = today - dt.timedelta(days=back)
-        if d.weekday() >= 5:          # skip Saturday / Sunday
+        if d.weekday() >= 5:
             continue
         snap = _load_snapshot(d)
         if nl in snap:
             return d.isoformat(), snap[nl]
-        # also try without trailing "s"
         if nl.endswith("s") and nl[:-1] in snap:
             return d.isoformat(), snap[nl[:-1]]
     return None
@@ -227,14 +226,12 @@ def _to_weekly(daily: pd.Series) -> pd.Series:
     return daily.resample("W-FRI").last().dropna()
 
 
-def compute_score(weekly: pd.Series, periods: list[int],
-                  ma_type: str) -> dict | None:
-    """Return score dict or None if fewer than 5 weekly bars."""
+def compute_score(weekly: pd.Series, periods: list, ma_type: str):
     if len(weekly) < 5:
         return None
     close = float(weekly.iloc[-1])
     crossed = available = 0
-    mas: dict[str, float | None] = {}
+    mas = {}
     for p in periods:
         if ma_type == "sma":
             val = weekly.rolling(p, min_periods=p).mean().iloc[-1]
@@ -258,8 +255,7 @@ def compute_score(weekly: pd.Series, periods: list[int],
     }
 
 
-def build_history(daily: pd.Series, periods: list[int],
-                  ma_type: str, n_weeks: int = 52) -> list[dict]:
+def build_history(daily: pd.Series, periods: list, ma_type: str, n_weeks: int = 52) -> list:
     weekly = _to_weekly(daily)
     if weekly.empty:
         return []
@@ -281,26 +277,25 @@ def build_history(daily: pd.Series, periods: list[int],
 # Main data collection loop
 # ---------------------------------------------------------------------------
 
-def collect() -> list[dict]:
-    print("Fetching live prices from Yahoo Finance…", flush=True)
-    live_map: dict[str, pd.Series] = {}
+def collect() -> list:
+    print("Fetching live prices from Yahoo Finance...", flush=True)
+    live_map = {}
     for name, ticker, _ in INDICES:
         time.sleep(0.3)
         s = fetch_yf(ticker)
         live_map[name] = s
         if not s.empty:
-            print(f"  ✓ {name}: {len(s)} rows, latest {s.index.max().date()}", flush=True)
+            print(f"  OK  {name}: {len(s)} rows, latest {s.index.max().date()}", flush=True)
         else:
-            print(f"  ✗ {name}: empty", flush=True)
+            print(f"  --  {name}: empty", flush=True)
 
-    print("\nLoading seeds + computing scores…", flush=True)
+    print("\nLoading seeds + computing scores...", flush=True)
     results = []
     today = dt.date.today()
 
     for name, _, nse_label in INDICES:
-        print(f"  {name}… ", end="", flush=True)
+        print(f"  {name}... ", end="", flush=True)
 
-        # --- merge seed + live ---
         seed = load_seed(name)
         live = live_map.get(name, pd.Series(dtype="float64"))
 
@@ -314,15 +309,13 @@ def collect() -> list[dict]:
         else:
             daily = pd.Series(dtype="float64")
 
-        # --- latest close ---
-        latest_date: str | None = None
-        latest_close: float | None = None
+        latest_date = None
+        latest_close = None
 
         if not live.empty:
             latest_date = live.index.max().date().isoformat()
             latest_close = round(float(live.iloc[-1]), 2)
 
-        # if yfinance didn't get today, try NiftyIndices
         if (latest_date != today.isoformat()) and (name != "India VIX"):
             ni = nifty_latest(nse_label)
             if ni:
@@ -335,7 +328,6 @@ def collect() -> list[dict]:
                 latest_date = nd
                 latest_close = round(nc, 2)
 
-        # --- compute scores ---
         weekly = _to_weekly(daily)
         sma_score = compute_score(weekly, SMA_PERIODS, "sma")
         ema_score = compute_score(weekly, SMA_PERIODS, "ema")
@@ -359,25 +351,21 @@ def collect() -> list[dict]:
 
 # ---------------------------------------------------------------------------
 # HTML template
+# NOTE: plain string (not f-string). Only __JSON_DATA__ is replaced.
+# IMPORTANT: the _data script tag is placed BEFORE the main script so
+# document.getElementById('_data') works when the JS runs.
 # ---------------------------------------------------------------------------
 
-# NOTE: This is a plain string — NOT an f-string.
-# The only substitution is __JSON_DATA__ which is replaced with .replace() below.
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ekaiva · NSE Index SMA/EMA Tracker</title>
+<title>Ekaiva &middot; NSE Index SMA/EMA Tracker</title>
 <style>
 :root {
-  --bg:       #0d1117;
-  --card:     #161b22;
-  --border:   #30363d;
-  --text:     #e6edf3;
-  --muted:    #8b949e;
-  --accent:   #1f6feb;
-  /* score colours */
+  --bg:   #0d1117; --card: #161b22; --border: #30363d;
+  --text: #e6edf3; --muted: #8b949e; --accent: #1f6feb;
   --c6: #1a7f37; --c6t: #3fb950;
   --c5: #2a6e18; --c5t: #85c450;
   --c4: #5a4000; --c4t: #d29922;
@@ -389,34 +377,20 @@ HTML = r"""<!DOCTYPE html>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
 
-/* ── Header ── */
 .site-header { border-bottom: 1px solid var(--border); padding: 20px 24px 14px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .site-header h1 { font-size: 1.25rem; font-weight: 800; letter-spacing: .06em; }
 .site-header .tagline { color: var(--muted); font-size: .75rem; }
 .meta-bar { color: var(--muted); font-size: .72rem; margin-top: 2px; }
 
-/* ── Toggle ── */
 .mode-toggle { display: flex; justify-content: center; gap: 10px; padding: 16px 0 8px; }
-.mode-toggle button {
-  padding: 7px 28px; border-radius: 6px; border: 1px solid var(--border);
-  background: var(--card); color: var(--muted); font-weight: 700; font-size: .8rem;
-  cursor: pointer; transition: all .18s; letter-spacing: .04em;
-}
+.mode-toggle button { padding: 7px 28px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--muted); font-weight: 700; font-size: .8rem; cursor: pointer; transition: all .18s; letter-spacing: .04em; }
 .mode-toggle button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-/* ── Layout ── */
 .container { max-width: 1080px; margin: 0 auto; padding: 0 16px 60px; }
-.section-title {
-  font-size: .7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
-  color: var(--muted); padding: 16px 0 8px;
-}
+.section-title { font-size: .7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); padding: 16px 0 8px; }
 
-/* ── Green-alert tiles ── */
 .green-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-bottom: 4px; }
-.tile {
-  background: var(--c6); border: 1px solid #2ea04380; border-radius: 10px;
-  padding: 14px 16px; cursor: pointer; transition: filter .15s, transform .1s;
-}
+.tile { background: var(--c6); border: 1px solid #2ea04380; border-radius: 10px; padding: 14px 16px; cursor: pointer; transition: filter .15s, transform .1s; }
 .tile:hover { filter: brightness(1.15); transform: translateY(-1px); }
 .tile-name { font-size: .82rem; font-weight: 700; line-height: 1.3; margin-bottom: 8px; color: var(--c6t); }
 .tile-close { font-size: .75rem; color: rgba(255,255,255,.55); margin-bottom: 10px; font-variant-numeric: tabular-nums; }
@@ -425,39 +399,22 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, Bl
 .pip.on { background: var(--c6t); }
 .tile-score { font-size: 1.2rem; font-weight: 800; color: var(--c6t); }
 
-/* ── Everything-else rows ── */
 .index-list { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-.idx-row {
-  display: flex; align-items: center; padding: 10px 16px; gap: 10px;
-  border-top: 1px solid var(--border); cursor: pointer; transition: background .12s;
-}
+.idx-row { display: flex; align-items: center; padding: 10px 16px; gap: 10px; border-top: 1px solid var(--border); cursor: pointer; transition: background .12s; }
 .idx-row:first-child { border-top: none; }
 .idx-row:hover { background: rgba(255,255,255,.04); }
-.score-dot {
-  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
-}
+.score-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .idx-name { flex: 1; font-size: .83rem; font-weight: 500; }
 .idx-close { width: 86px; text-align: right; font-size: .8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 .row-pips { display: flex; gap: 3px; flex-shrink: 0; }
 .row-pip { width: 12px; height: 12px; border-radius: 2px; background: var(--border); }
-.row-pip.on { background: currentColor; }
 .idx-score { width: 34px; text-align: right; font-size: .78rem; font-weight: 700; flex-shrink: 0; }
 .ins-tag { font-size: .7rem; color: var(--muted); font-style: italic; }
 
-/* ── Modal ── */
-#overlay {
-  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.72);
-  z-index: 200; align-items: center; justify-content: center;
-}
+#overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 200; align-items: center; justify-content: center; }
 #overlay.open { display: flex; }
-#modal {
-  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-  width: min(620px, 96vw); max-height: 88vh; display: flex; flex-direction: column;
-}
-#modal-hdr {
-  padding: 16px 20px; border-bottom: 1px solid var(--border);
-  display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
-}
+#modal { background: var(--card); border: 1px solid var(--border); border-radius: 12px; width: min(620px, 96vw); max-height: 88vh; display: flex; flex-direction: column; }
+#modal-hdr { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
 #modal-hdr h2 { font-size: .95rem; font-weight: 700; }
 #modal-close { background: none; border: none; color: var(--muted); font-size: 1.2rem; cursor: pointer; }
 #modal-body { overflow-y: auto; padding: 16px 20px; }
@@ -466,14 +423,12 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, Bl
 .ms-label { font-size: .65rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .ms-value { font-size: .95rem; font-weight: 700; }
 .ms-ma { font-size: .82rem; font-weight: 600; }
-.arrow-up { color: #3fb950; }
-.arrow-dn { color: #f85149; }
+.arrow-up { color: #3fb950; } .arrow-dn { color: #f85149; }
 .hist-table { width: 100%; border-collapse: collapse; font-size: .76rem; }
 .hist-table th { text-align: left; padding: 5px 8px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; }
 .hist-table td { padding: 4px 8px; border-bottom: 1px solid rgba(48,54,61,.4); font-variant-numeric: tabular-nums; }
 .hist-table tr:hover td { background: rgba(255,255,255,.03); }
 
-/* ── Footer ── */
 footer { text-align: center; padding: 20px 16px; color: var(--muted); font-size: .72rem; border-top: 1px solid var(--border); line-height: 1.8; }
 
 @media (max-width: 520px) {
@@ -518,38 +473,36 @@ footer { text-align: center; padding: 20px 16px; color: var(--muted); font-size:
   Not investment advice. Score = weekly closes above each MA (periods: 5 / 10 / 20 / 50 / 100 / 200 weeks).
 </footer>
 
+<!-- DATA MUST come before the main script so getElementById works -->
+<script id="_data" type="application/json">__JSON_DATA__</script>
+
 <script>
 const DATA = JSON.parse(document.getElementById('_data').textContent);
 let MODE = 'sma';
 
-/* ── colour helpers ── */
 const BG  = ['--c0','--c1','--c2','--c3','--c4','--c5','--c6'];
 const TXT = ['--c0t','--c1t','--c2t','--c3t','--c4t','--c5t','--c6t'];
 
-function css(varName) {
-  return getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
-}
-function bgColor(x)  { return css(BG[Math.min(x, 6)]); }
-function txtColor(x) { return css(TXT[Math.min(x, 6)]); }
+function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+function bgColor(x)  { return css(BG[Math.min(x,6)]); }
+function txtColor(x) { return css(TXT[Math.min(x,6)]); }
 
-/* ── format ── */
 function fmtNum(n) {
   if (n == null) return '—';
-  return n.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  return n.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
 }
 
 function signal(x) {
-  if (x === 6) return '&#x1F7E2; Fully above';
-  if (x >= 4)  return '&#x1F7E1; Mostly above';
-  if (x >= 2)  return '&#x1F7E0; Mixed';
+  if (x===6) return '&#x1F7E2; Fully above';
+  if (x>=4)  return '&#x1F7E1; Mostly above';
+  if (x>=2)  return '&#x1F7E0; Mixed';
   return '&#x1F534; Below most';
 }
 
-/* ── render ── */
 function setMode(m) {
   MODE = m;
-  document.getElementById('btn-sma').className = m === 'sma' ? 'active' : '';
-  document.getElementById('btn-ema').className = m === 'ema' ? 'active' : '';
+  document.getElementById('btn-sma').className = m==='sma' ? 'active' : '';
+  document.getElementById('btn-ema').className = m==='ema' ? 'active' : '';
   render();
 }
 
@@ -558,10 +511,10 @@ function render() {
     'Market data as of ' + DATA.as_of + '   ·   Generated ' + DATA.generated;
 
   const indices = DATA.indices;
-  const green = indices.filter(d => d[MODE] && d[MODE].crossed === 6 && d[MODE].available === 6);
+  const green = indices.filter(d => d[MODE] && d[MODE].crossed===6 && d[MODE].available===6);
   const rest  = indices
-    .filter(d => !(d[MODE] && d[MODE].crossed === 6 && d[MODE].available === 6))
-    .sort((a, b) => {
+    .filter(d => !(d[MODE] && d[MODE].crossed===6 && d[MODE].available===6))
+    .sort((a,b) => {
       const xa = a[MODE] ? a[MODE].crossed : -1;
       const xb = b[MODE] ? b[MODE].crossed : -1;
       return xb - xa;
@@ -569,9 +522,8 @@ function render() {
 
   let html = '';
 
-  /* green tiles */
   if (green.length) {
-    html += '<div class="section-title">&#x1F7E2; Green Alert &mdash; ' + MODE.toUpperCase() + ' 6/6 (' + green.length + ')</div>';
+    html += '<div class="section-title">&#x1F7E2; Green Alert — ' + MODE.toUpperCase() + ' 6/6 (' + green.length + ')</div>';
     html += '<div class="green-grid">';
     green.forEach(d => { html += tileHTML(d); });
     html += '</div>';
@@ -579,7 +531,6 @@ function render() {
     html += '<div class="section-title" style="color:#f85149">No index is 6/6 in ' + MODE.toUpperCase() + ' model right now</div>';
   }
 
-  /* rest list */
   html += '<div class="section-title">Everything else</div>';
   html += '<div class="index-list">';
   rest.forEach(d => { html += rowHTML(d); });
@@ -593,8 +544,8 @@ function tileHTML(d) {
   const x = s ? s.crossed : 0;
   const tc = txtColor(x);
   let pips = '';
-  for (let i = 0; i < 6; i++) {
-    pips += '<div class="pip' + (i < x ? ' on' : '') + '" style="' + (i < x ? 'background:' + tc : '') + '"></div>';
+  for (let i=0; i<6; i++) {
+    pips += '<div class="pip' + (i<x?' on':'') + '" style="' + (i<x?'background:'+tc:'') + '"></div>';
   }
   return '<div class="tile" onclick="openModal(\'' + esc(d.name) + '\')">' +
     '<div class="tile-name">' + d.name + '</div>' +
@@ -608,52 +559,47 @@ function rowHTML(d) {
   const s = d[MODE];
   const x = s ? s.crossed : -1;
   const avail = s ? s.available : 0;
-  const tc = x >= 0 ? txtColor(x) : css('--muted');
-  const dot = '<span class="score-dot" style="background:' + (x >= 0 ? bgColor(x) : css('--c0')) + '"></span>';
+  const tc = x>=0 ? txtColor(x) : css('--muted');
+  const dot = '<span class="score-dot" style="background:' + (x>=0 ? bgColor(x) : css('--c0')) + '"></span>';
 
   let pips = '<div class="row-pips">';
-  for (let i = 0; i < 6; i++) {
-    pips += '<span class="row-pip' + (i < x ? ' on' : '') + '" style="' + (i < x ? 'color:' + tc : '') + '"></span>';
+  for (let i=0; i<6; i++) {
+    pips += '<span class="row-pip' + (i<x?' on':'') + '" style="' + (i<x?'color:'+tc:'') + '"></span>';
   }
   pips += '</div>';
 
-  const scoreStr = avail > 0
-    ? '<span class="idx-score" style="color:' + tc + '">' + x + '/6</span>'
+  const scoreStr = avail>0
+    ? '<span class="idx-score" style="color:'+tc+'">'+x+'/6</span>'
     : '<span class="ins-tag">insuf.</span>';
 
   return '<div class="idx-row" onclick="openModal(\'' + esc(d.name) + '\')">' +
-    dot +
-    '<span class="idx-name">' + d.name + '</span>' +
+    dot + '<span class="idx-name">' + d.name + '</span>' +
     '<span class="idx-close">' + fmtNum(d.close) + '</span>' +
-    pips +
-    scoreStr +
-    '</div>';
+    pips + scoreStr + '</div>';
 }
 
-/* ── modal ── */
-function esc(s) { return s.replace(/'/g, "\\'"); }
+function esc(s) { return s.replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
 
 function openModal(name) {
-  const d = DATA.indices.find(i => i.name === name);
+  const d = DATA.indices.find(i => i.name===name);
   if (!d) return;
   const s = d[MODE];
-  const hist = d[MODE + '_hist'] || [];
-  const periods = [5, 10, 20, 50, 100, 200];
+  const hist = d[MODE+'_hist'] || [];
+  const periods = [5,10,20,50,100,200];
 
   document.getElementById('modal-title').textContent = name;
 
-  /* summary */
   let sum = '';
   if (s) {
     const x = s.crossed;
     sum += '<div class="ms-item"><div class="ms-label">Close</div><div class="ms-value">' + fmtNum(d.close) + '</div></div>';
-    sum += '<div class="ms-item"><div class="ms-label">Score</div><div class="ms-value" style="color:' + txtColor(x) + '">' + x + '/6</div></div>';
+    sum += '<div class="ms-item"><div class="ms-label">Score</div><div class="ms-value" style="color:'+txtColor(x)+'">' + x + '/6</div></div>';
     periods.forEach(p => {
       const v = s.mas[String(p)];
-      if (v != null) {
+      if (v!=null) {
         const above = d.close > v;
-        sum += '<div class="ms-item"><div class="ms-label">' + MODE.toUpperCase() + p + '</div>' +
-          '<div class="ms-ma">' + fmtNum(v) + ' <span class="' + (above ? 'arrow-up' : 'arrow-dn') + '">' + (above ? '&#9650;' : '&#9660;') + '</span></div></div>';
+        sum += '<div class="ms-item"><div class="ms-label">' + MODE.toUpperCase()+p + '</div>' +
+          '<div class="ms-ma">' + fmtNum(v) + ' <span class="'+(above?'arrow-up':'arrow-dn')+'">'+(above?'&#9650;':'&#9660;')+'</span></div></div>';
       }
     });
   } else {
@@ -661,12 +607,10 @@ function openModal(name) {
   }
   document.getElementById('modal-summary').innerHTML = sum;
 
-  /* history rows */
   let tbody = '';
   [...hist].reverse().forEach(row => {
-    const tc = txtColor(row.x);
     tbody += '<tr><td>' + row.w + '</td><td>' + fmtNum(row.c) + '</td>' +
-      '<td style="color:' + tc + ';font-weight:700">' + row.x + '/6</td>' +
+      '<td style="color:'+txtColor(row.x)+';font-weight:700">' + row.x + '/6</td>' +
       '<td>' + signal(row.x) + '</td></tr>';
   });
   document.getElementById('modal-tbody').innerHTML = tbody ||
@@ -675,19 +619,12 @@ function openModal(name) {
   document.getElementById('overlay').classList.add('open');
 }
 
-function closeModal() {
-  document.getElementById('overlay').classList.remove('open');
-}
-function maybeClose(e) {
-  if (e.target === document.getElementById('overlay')) closeModal();
-}
-
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+function closeModal() { document.getElementById('overlay').classList.remove('open'); }
+function maybeClose(e) { if (e.target===document.getElementById('overlay')) closeModal(); }
+document.addEventListener('keydown', e => { if (e.key==='Escape') closeModal(); });
 
 render();
 </script>
-
-<script id="_data" type="application/json">__JSON_DATA__</script>
 </body>
 </html>
 """
@@ -697,7 +634,7 @@ render();
 # Build and write HTML
 # ---------------------------------------------------------------------------
 
-def build_html(results: list[dict]) -> str:
+def build_html(results: list) -> str:
     today = dt.date.today()
     now = dt.datetime.now()
 
@@ -722,7 +659,6 @@ def build_html(results: list[dict]) -> str:
     }
 
     json_str = json.dumps(payload, separators=(",", ":"))
-    # Escape </script> sequences so the embedded JSON doesn't break the HTML parser
     json_str = json_str.replace("</", "<\\/")
     return HTML.replace("__JSON_DATA__", json_str)
 
@@ -733,4 +669,4 @@ if __name__ == "__main__":
     out = "index.html"
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"\nWritten → {out}  ({len(html):,} bytes)")
+    print(f"\nWritten -> {out}  ({len(html):,} bytes)")
